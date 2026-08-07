@@ -339,11 +339,11 @@ if len(st.session_state.resultados) > 0:
 
 else:
 
-    st.write(
+    
         "Esperando terminar el primer ciclo de 15 minutos..."
     )
-        "Sin señales todavía"
-    )
+
+   
 
 
 # Actualización automática
