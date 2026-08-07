@@ -11,13 +11,12 @@ st.set_page_config(
 
 
 def obtener_datos(simbolo):
+def obtener_datos(simbolo):
 
-    url = "https://api.binance.com/api/v3/klines"
+    url = "https://api.exchange.coinbase.com/products/" + simbolo + "/candles"
 
     parametros = {
-        "symbol": simbolo,
-        "interval": "15m",
-        "limit": 200
+        "granularity": 900
     }
 
     respuesta = requests.get(
@@ -30,24 +29,24 @@ def obtener_datos(simbolo):
     if isinstance(datos, dict):
         raise Exception(datos)
 
-    df = pd.DataFrame(datos)
-
-    df = df.iloc[:, :6]
-
-    df.columns = [
-        "time",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume"
-    ]
+    df = pd.DataFrame(
+        datos,
+        columns=[
+            "time",
+            "low",
+            "high",
+            "open",
+            "close",
+            "volume"
+        ]
+    )
 
     df["close"] = df["close"].astype(float)
     df["volume"] = df["volume"].astype(float)
 
-    return df
+    df = df.sort_values("time")
 
+    return df
 
 def analizar(df):
 
