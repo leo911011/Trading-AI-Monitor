@@ -5,27 +5,24 @@ import requests
 import time
 from datetime import datetime, timedelta
 
-st.set_page_config(
-    page_title="BTC Predictor 15 Min",
-    page_icon="₿",
-    layout="centered"
-)
-
-st.title("₿ Bitcoin Predictor - Ciclos de 15 minutos")
-
-CICLO = 15
-UMBRAL = 80
-
-
-# -----------------------------
-# MEMORIA DE LA APP
-# -----------------------------
 
 if "inicio" not in st.session_state:
     st.session_state.inicio = datetime.now()
 
 if "historial" not in st.session_state:
     st.session_state.historial = []
+
+if "señal_actual" not in st.session_state:
+    st.session_state.señal_actual = None
+
+if "precio_entrada" not in st.session_state:
+    st.session_state.precio_entrada = 0
+
+if "hora_inicio" not in st.session_state:
+    st.session_state.hora_inicio = ""
+
+if "resultados" not in st.session_state:
+    st.session_state.resultados = []
 
 
 # -----------------------------
