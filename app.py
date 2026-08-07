@@ -33,14 +33,14 @@ if "historial" not in st.session_state:
 # -----------------------------
 
 @st.cache_data(ttl=60)
+@st.cache_data(ttl=60)
 def obtener_btc():
 
-    url = "https://api.binance.com/api/v3/klines"
+    url = "https://api.coingecko.com/api/v3/coins/bitcoin/ohlc"
 
     parametros = {
-        "symbol": "BTCUSDT",
-        "interval": "1m",
-        "limit": 200
+        "vs_currency": "usd",
+        "days": "1"
     }
 
     respuesta = requests.get(
@@ -52,37 +52,33 @@ def obtener_btc():
     datos = respuesta.json()
 
     if not isinstance(datos, list) or len(datos) == 0:
-        raise Exception("Binance no devolvió datos")
+        raise Exception("CoinGecko no devolvió datos")
 
-    df = pd.DataFrame(datos, columns=[
-        "time",
-        "Open",
-        "High",
-        "Low",
-        "Close",
-        "Volume",
-        "close_time",
-        "qav",
-        "trades",
-        "tb_base",
-        "tb_quote",
-        "ignore"
-    ])
+
+    df = pd.DataFrame(
+        datos,
+        columns=[
+            "time",
+            "Open",
+            "High",
+            "Low",
+            "Close"
+        ]
+    )
 
     df["Close"] = pd.to_numeric(
         df["Close"],
         errors="coerce"
     )
 
-    df["Volume"] = pd.to_numeric(
-        df["Volume"],
-        errors="coerce"
-    )
-
     df = df.dropna()
 
+
     if len(df) < 30:
-        raise Exception("No hay suficientes velas para analizar")
+        raise Exception("No hay suficientes datos")
+
+
+    df["Volume"] = 0
 
     return df
 
