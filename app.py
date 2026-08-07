@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import time
 from datetime import datetime, timedelta
 
@@ -167,35 +166,44 @@ if tiempo_pasado >= timedelta(minutes=CICLO_MINUTOS):
 
 try:
 
-    btc = obtener_btc()
-    btc = calcular_indicadores(btc)
+import requests
 
-    señal, confianza, razones = analizar_mercado(btc)
+@st.cache_data(ttl=60)
+def obtener_btc():
 
-    precio = btc["Close"].iloc[-1]
+    url = "https://api.binance.com/api/v3/klines"
 
-    st.metric(
-        "Precio BTC",
-        f"${float(precio):,.2f}"
-    )
+    parametros = {
+        "symbol": "BTCUSDT",
+        "interval": "1m",
+        "limit": 200
+    }
 
-    st.subheader("Predicción próximos 15 minutos")
+    respuesta = requests.get(url, params=parametros)
 
-    st.write(señal)
+    datos = respuesta.json()
 
-    st.write(
-        f"Confianza estimada: {confianza:.0f}%"
-    )
+    df = pd.DataFrame(datos, columns=[
+        "time",
+        "Open",
+        "High",
+        "Low",
+        "Close",
+        "Volume",
+        "close_time",
+        "qav",
+        "trades",
+        "tb_base",
+        "tb_quote",
+        "ignore"
+    ])
 
-    st.write("Motivos:")
+    df["Close"] = df["Close"].astype(float)
+    df["Volume"] = df["Volume"].astype(float)
 
-    for r in razones:
-        st.write("✅", r)
+    return df   
 
-
-except Exception as e:
-
-    st.error("Error obteniendo datos")
+    
 
 
 # -----------------------------
