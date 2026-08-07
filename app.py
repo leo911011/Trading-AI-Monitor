@@ -5,6 +5,8 @@ import requests
 import time
 from datetime import datetime, timedelta
 
+CICLO = 15
+UMBRAL = 80
 
 if "inicio" not in st.session_state:
     st.session_state.inicio = datetime.now()
