@@ -283,20 +283,65 @@ st.subheader(
 # HISTORIAL
 # -----------------------------
 
-st.subheader("📜 Historial")
+# -----------------------------
+# HISTORIAL DE RESULTADOS
+# -----------------------------
+
+st.subheader("📜 Historial de ciclos")
 
 
-if len(st.session_state.historial) > 0:
+if len(st.session_state.resultados) > 0:
 
     tabla = pd.DataFrame(
-        st.session_state.historial
+        st.session_state.resultados
     )
 
     st.dataframe(tabla)
 
+
+    total = len(tabla)
+
+    aciertos = len(
+        tabla[
+            tabla["Resultado"] == "✅ ACIERTO"
+        ]
+    )
+
+
+    precision = (aciertos / total) * 100
+
+
+    st.subheader("📊 Rendimiento")
+
+    col1, col2, col3 = st.columns(3)
+
+
+    with col1:
+        st.metric(
+            "Señales",
+            total
+        )
+
+
+    with col2:
+        st.metric(
+            "Aciertos",
+            aciertos
+        )
+
+
+    with col3:
+        st.metric(
+            "Precisión",
+            f"{precision:.1f}%"
+        )
+
+
 else:
 
     st.write(
+        "Esperando terminar el primer ciclo de 15 minutos..."
+    )
         "Sin señales todavía"
     )
 
