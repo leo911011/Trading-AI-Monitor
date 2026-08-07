@@ -17,6 +17,29 @@ st.set_page_config(
 
 CICLO = 15
 UMBRAL = 80
+import json
+import os
+
+ARCHIVO_CICLO = "ciclo_btc.json"
+
+
+def cargar_inicio():
+    if os.path.exists(ARCHIVO_CICLO):
+        with open(ARCHIVO_CICLO, "r") as f:
+            datos = json.load(f)
+            return datetime.fromisoformat(datos["inicio"])
+    else:
+        inicio = datetime.now()
+        guardar_inicio(inicio)
+        return inicio
+
+
+def guardar_inicio(inicio):
+    with open(ARCHIVO_CICLO, "w") as f:
+        json.dump(
+            {"inicio": inicio.isoformat()},
+            f
+        )
 
 
 # =============================
