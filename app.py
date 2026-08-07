@@ -27,10 +27,10 @@ def obtener_datos(simbolo):
 
     datos = respuesta.json()
 
-if isinstance(datos, dict):
-    raise Exception(datos)
+    if isinstance(datos, dict):
+        raise Exception(datos)
 
-df = pd.DataFrame(datos)
+    df = pd.DataFrame(datos)
 
     df = df.iloc[:, :6]
 
