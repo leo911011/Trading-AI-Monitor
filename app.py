@@ -99,8 +99,8 @@ st.write(
 
 
 for nombre, simbolo in [
-    ("Bitcoin ₿","BTCUSDT"),
-    ("Solana ◎","SOLUSDT")
+    ("Bitcoin ₿","BTC-USD"),
+("Solana ◎","SOL-USD")
 ]:
 
     st.divider()
