@@ -262,6 +262,10 @@ def analizar(df):
 # EJECUCIÓN PRINCIPAL
 # -----------------------------
 
+# -----------------------------
+# EJECUCIÓN PRINCIPAL
+# -----------------------------
+
 try:
 
     btc = obtener_btc()
@@ -271,7 +275,22 @@ try:
     precio_actual = btc["Close"].iloc[-1]
 
 
-    senal, confianza, razones = analizar(btc)
+    nueva_senal, confianza, razones = analizar(btc)
+
+
+
+    # Crear señal solo al inicio de ciclo
+
+    if st.session_state.senal_actual is None:
+
+        st.session_state.senal_actual = nueva_senal
+
+        st.session_state.precio_entrada = precio_actual
+
+        st.session_state.hora_entrada = (
+            datetime.now()
+            .strftime("%H:%M:%S")
+        )
 
 
 
@@ -288,7 +307,10 @@ try:
     )
 
 
-    st.write(senal)
+    st.write(
+        st.session_state.senal_actual
+    )
+
 
     st.write(
         f"Confianza: {confianza:.0f}%"
@@ -304,6 +326,198 @@ try:
             razon
         )
 
+
+
+    # Gráfico
+
+    st.subheader("📈 Movimiento BTC")
+
+    grafico = btc[["Close"]]
+
+    st.line_chart(grafico)
+
+
+
+    # Temporizador
+
+    pasado = (
+        datetime.now()
+        -
+        st.session_state.inicio_ciclo
+    )
+
+
+    restante = (
+        timedelta(minutes=CICLO)
+        -
+        pasado
+    )
+
+
+
+    if restante.total_seconds() <= 0:
+
+
+        precio_salida = precio_actual
+
+
+        if st.session_state.senal_actual == "🟢 SUBIR":
+
+            acertado = (
+                precio_salida >
+                st.session_state.precio_entrada
+            )
+
+
+        elif st.session_state.senal_actual == "🔴 BAJAR":
+
+            acertado = (
+                precio_salida <
+                st.session_state.precio_entrada
+            )
+
+        else:
+
+            acertado = False
+
+
+
+        diferencia = (
+            precio_salida -
+            st.session_state.precio_entrada
+        )
+
+
+        st.session_state.resultados.append({
+
+            "Hora":
+            st.session_state.hora_entrada,
+
+            "Señal":
+            st.session_state.senal_actual,
+
+            "Entrada":
+            round(
+                st.session_state.precio_entrada,
+                2
+            ),
+
+            "Salida":
+            round(
+                precio_salida,
+                2
+            ),
+
+            "Cambio":
+            round(
+                diferencia,
+                2
+            ),
+
+            "Resultado":
+            "✅ ACIERTO"
+            if acertado
+            else
+            "❌ FALLÓ"
+
+        })
+
+
+        # Nuevo ciclo
+
+        st.session_state.senal_actual = nueva_senal
+
+        st.session_state.precio_entrada = precio_actual
+
+        st.session_state.hora_entrada = (
+            datetime.now()
+            .strftime("%H:%M:%S")
+        )
+
+        st.session_state.inicio_ciclo = datetime.now()
+
+
+
+        restante = timedelta(minutes=CICLO)
+
+
+
+    minutos = int(
+        restante.seconds / 60
+    )
+
+    segundos = (
+        restante.seconds % 60
+    )
+
+
+    st.subheader(
+        f"⏳ Nuevo ciclo en {minutos:02d}:{segundos:02d}"
+    )
+
+
+
+    # Historial
+
+    st.subheader(
+        "📜 Historial"
+    )
+
+
+    if len(st.session_state.resultados) > 0:
+
+
+        tabla = pd.DataFrame(
+            st.session_state.resultados
+        )
+
+        st.dataframe(tabla)
+
+
+
+        total = len(tabla)
+
+        aciertos = len(
+            tabla[
+                tabla["Resultado"]
+                ==
+                "✅ ACIERTO"
+            ]
+        )
+
+
+        precision = (
+            aciertos /
+            total
+        ) * 100
+
+
+
+        st.metric(
+            "Precisión",
+            f"{precision:.1f}%"
+        )
+
+
+    else:
+
+        st.write(
+            "Esperando primer resultado..."
+        )
+
+
+
+except Exception as error:
+
+    st.error(
+        f"Error: {error}"
+    )
+
+
+
+time.sleep(5)
+
+st.rerun()
 
 
     # -----------------------------
