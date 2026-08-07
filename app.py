@@ -420,7 +420,64 @@ try:
     segundos = (
         restante.seconds % 60
     )
+    st.subheader(
+        f"⏳ Nuevo ciclo en {minutos:02d}:{segundos:02d}"
+    )
 
+
+    # -----------------------------
+    # HISTORIAL
+    # -----------------------------
+
+    st.subheader("📜 Historial de ciclos")
+
+
+    if len(st.session_state.resultados) > 0:
+
+        tabla = pd.DataFrame(
+            st.session_state.resultados
+        )
+
+        st.dataframe(tabla)
+
+
+        total = len(tabla)
+
+        aciertos = len(
+            tabla[
+                tabla["Resultado"] == "✅ ACIERTO"
+            ]
+        )
+
+
+        precision = (
+            aciertos / total
+        ) * 100
+
+
+        st.metric(
+            "Precisión",
+            f"{precision:.1f}%"
+        )
+
+
+    else:
+
+        st.write(
+            "Esperando terminar el primer ciclo..."
+        )
+
+
+except Exception as error:
+
+    st.error(
+        f"Error obteniendo datos: {error}"
+    )
+
+
+time.sleep(5)
+
+st.rerun()
 
     
     
