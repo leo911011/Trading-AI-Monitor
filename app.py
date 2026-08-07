@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import time
 from datetime import datetime, timedelta
+import request
 
 st.set_page_config(
     page_title="BTC 15 Min Predictor",
