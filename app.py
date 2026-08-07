@@ -51,6 +51,9 @@ def obtener_btc():
 
     datos = respuesta.json()
 
+    if not isinstance(datos, list) or len(datos) == 0:
+        raise Exception("Binance no devolvió datos")
+
     df = pd.DataFrame(datos, columns=[
         "time",
         "Open",
@@ -66,8 +69,20 @@ def obtener_btc():
         "ignore"
     ])
 
-    df["Close"] = df["Close"].astype(float)
-    df["Volume"] = df["Volume"].astype(float)
+    df["Close"] = pd.to_numeric(
+        df["Close"],
+        errors="coerce"
+    )
+
+    df["Volume"] = pd.to_numeric(
+        df["Volume"],
+        errors="coerce"
+    )
+
+    df = df.dropna()
+
+    if len(df) < 30:
+        raise Exception("No hay suficientes velas para analizar")
 
     return df
 
