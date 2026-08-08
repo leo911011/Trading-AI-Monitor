@@ -1,13 +1,17 @@
-import streamlit as st
-import pandas as pd
+impimport streamlit as st
 import requests
-import time
+import pandas as pd
 import json
 import os
-import math
+import time
+import base64
+import re
 
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 
 
 # ============================================================
@@ -15,45 +19,784 @@ from zoneinfo import ZoneInfo
 # ============================================================
 
 st.set_page_config(
-    page_title="BTC Predictor Kalshi 15 Min",
+    page_title="BTC Kalshi Predictor 15M",
     page_icon="₿",
     layout="centered"
 )
 
-CICLO = 15
-ZONA = ZoneInfo("America/Chicago")
+KALSHI_URL = "https://external-api.kalshi.com"
+SERIES = "KXBTC15M"
 
-ARCHIVO_HISTORIAL = "historial_kalshi_btc.json"
+LOCAL_TZ = ZoneInfo("America/Chicago")
 
-KALSHI_SERIES = "KXBTC15M"
+HISTORIAL_FILE = "historial_kalshi.json"
 
 
 # ============================================================
-# HORA LOCAL
+# CREDENCIALES
 # ============================================================
 
-def ahora():
+def cargar_credenciales():
 
-    return datetime.now(ZONA)
+    try:
+
+        key_id = st.secrets["KALSHI_API_KEY_ID"]
+        private_key = st.secrets["KALSHI_PRIVATE_KEY"]
+
+        return str(key_id), str(private_key)
+
+    except Exception:
+
+        return None, None
 
 
-def inicio_ciclo():
+API_KEY_ID, PRIVATE_KEY = cargar_credenciales()
 
-    t = ahora()
 
-    minuto = (t.minute // CICLO) * CICLO
+# ============================================================
+# FIRMA KALSHI
+# ============================================================
 
-    return t.replace(
-        minute=minuto,
-        second=0,
-        microsecond=0
+def cargar_clave_privada():
+
+    if not PRIVATE_KEY:
+
+        raise Exception(
+            "No existe KALSHI_PRIVATE_KEY "
+            "en Streamlit Secrets."
+        )
+
+    return serialization.load_pem_private_key(
+        PRIVATE_KEY.encode("utf-8"),
+        password=None
     )
 
 
-def fin_ciclo():
+def crear_firma(timestamp, method, path):
 
-    return inicio_ciclo() + timedelta(
-        minutes=CICLO
+    private_key = cargar_clave_privada()
+
+    path_sin_query = path.split("?")[0]
+
+    mensaje = (
+        f"{timestamp}"
+        f"{method.upper()}"
+        f"{path_sin_query}"
+    ).encode("utf-8")
+
+    firma = private_key.sign(
+
+        mensaje,
+
+        padding.PSS(
+            mgf=padding.MGF1(
+                hashes.SHA256()
+            ),
+            salt_length=padding.PSS.DIGEST_LENGTH
+        ),
+
+        hashes.SHA256()
+    )
+
+    return base64.b64encode(
+        firma
+    ).decode("utf-8")
+
+
+# ============================================================
+# REQUEST KALSHI
+# ============================================================
+
+def kalshi_request(
+    method,
+    path,
+    params=None
+):
+
+    if not API_KEY_ID:
+
+        raise Exception(
+            "Falta KALSHI_API_KEY_ID "
+            "en Streamlit Secrets."
+        )
+
+    timestamp = str(
+        int(time.time() * 1000)
+    )
+
+    signature = crear_firma(
+        timestamp,
+        method,
+        path
+    )
+
+    headers = {
+
+        "KALSHI-ACCESS-KEY":
+            API_KEY_ID,
+
+        "KALSHI-ACCESS-TIMESTAMP":
+            timestamp,
+
+        "KALSHI-ACCESS-SIGNATURE":
+            signature,
+
+        "Content-Type":
+            "application/json"
+    }
+
+    response = requests.request(
+
+        method=method.upper(),
+
+        url=KALSHI_URL + path,
+
+        headers=headers,
+
+        params=params,
+
+        timeout=15
+    )
+
+    if response.status_code >= 400:
+
+        raise Exception(
+            f"Kalshi HTTP "
+            f"{response.status_code}: "
+            f"{response.text[:500]}"
+        )
+
+    return response.json()
+
+
+# ============================================================
+# MERCADOS BTC 15 MIN
+# ============================================================
+
+def obtener_mercados_btc():
+
+    data = kalshi_request(
+
+        "GET",
+
+        "/trade-api/v2/markets",
+
+        params={
+            "series_ticker": SERIES,
+            "status": "open",
+            "limit": 100
+        }
+    )
+
+    return data.get(
+        "markets",
+        []
+    )
+
+
+# ============================================================
+# FECHA
+# ============================================================
+
+def convertir_fecha(texto):
+
+    if not texto:
+
+        return None
+
+    try:
+
+        return datetime.fromisoformat(
+            texto.replace(
+                "Z",
+                "+00:00"
+            )
+        )
+
+    except Exception:
+
+        return None
+
+
+# ============================================================
+# BUSCAR MERCADO ACTUAL
+# ============================================================
+
+def buscar_mercado_actual():
+
+    mercados = obtener_mercados_btc()
+
+    ahora = datetime.now(
+        timezone.utc
+    )
+
+    candidatos = []
+
+
+    for mercado in mercados:
+
+        cierre = convertir_fecha(
+            mercado.get(
+                "close_time"
+            )
+        )
+
+        if cierre is None:
+
+            cierre = convertir_fecha(
+                mercado.get(
+                    "expiration_time"
+                )
+            )
+
+        if cierre is None:
+
+            continue
+
+        if cierre > ahora:
+
+            mercado["_close"] = cierre
+
+            candidatos.append(
+                mercado
+            )
+
+
+    if not candidatos:
+
+        raise Exception(
+            "No encontré un mercado "
+            "BTC 15M abierto."
+        )
+
+
+    candidatos.sort(
+        key=lambda x:
+        x["_close"]
+    )
+
+
+    return candidatos[0]
+
+
+# ============================================================
+# TARGET
+# ============================================================
+
+def obtener_target(mercado):
+
+    funcional = mercado.get(
+        "functional_strike"
+    )
+
+    if funcional not in (
+        None,
+        ""
+    ):
+
+        try:
+
+            return float(
+                funcional
+            )
+
+        except Exception:
+
+            pass
+
+
+    floor = mercado.get(
+        "floor_strike"
+    )
+
+    if floor not in (
+        None,
+        ""
+    ):
+
+        try:
+
+            return float(
+                floor
+            )
+
+        except Exception:
+
+            pass
+
+
+    cap = mercado.get(
+        "cap_strike"
+    )
+
+    if cap not in (
+        None,
+        ""
+    ):
+
+        try:
+
+            return float(
+                cap
+            )
+
+        except Exception:
+
+            pass
+
+
+    texto = " ".join([
+
+        str(
+            mercado.get(
+                "title",
+                ""
+            )
+        ),
+
+        str(
+            mercado.get(
+                "subtitle",
+                ""
+            )
+        ),
+
+        str(
+            mercado.get(
+                "yes_sub_title",
+                ""
+            )
+        )
+    ])
+
+
+    numeros = re.findall(
+        r"([0-9][0-9,]*(?:\.[0-9]+)?)",
+        texto
+    )
+
+
+    for numero in numeros:
+
+        try:
+
+            valor = float(
+                numero.replace(
+                    ",",
+                    ""
+                )
+            )
+
+            if valor > 1000:
+
+                return valor
+
+        except Exception:
+
+            pass
+
+
+    raise Exception(
+        "No pude encontrar "
+        "el Target del mercado."
+    )
+
+
+# ============================================================
+# BTC
+# ============================================================
+
+@st.cache_data(ttl=5)
+def obtener_btc():
+
+    url = (
+        "https://api.coingecko.com/api/v3/"
+        "coins/bitcoin/ohlc"
+    )
+
+    response = requests.get(
+
+        url,
+
+        params={
+            "vs_currency": "usd",
+            "days": "1"
+        },
+
+        timeout=10
+    )
+
+    response.raise_for_status()
+
+    data = response.json()
+
+    if not isinstance(
+        data,
+        list
+    ):
+
+        raise Exception(
+            "CoinGecko no devolvió "
+            "datos válidos."
+        )
+
+    df = pd.DataFrame(
+
+        data,
+
+        columns=[
+            "time",
+            "Open",
+            "High",
+            "Low",
+            "Close"
+        ]
+    )
+
+    df["Close"] = pd.to_numeric(
+        df["Close"],
+        errors="coerce"
+    )
+
+    df = df.dropna()
+
+    return df
+
+
+# ============================================================
+# INDICADORES
+# ============================================================
+
+def indicadores(df):
+
+    df = df.copy()
+
+
+    # EMA
+
+    df["EMA9"] = (
+        df["Close"]
+        .ewm(
+            span=9,
+            adjust=False
+        )
+        .mean()
+    )
+
+    df["EMA21"] = (
+        df["Close"]
+        .ewm(
+            span=21,
+            adjust=False
+        )
+        .mean()
+    )
+
+
+    # RSI
+
+    cambio = df["Close"].diff()
+
+    ganancias = cambio.clip(
+        lower=0
+    )
+
+    perdidas = -cambio.clip(
+        upper=0
+    )
+
+    avg_gain = (
+        ganancias
+        .rolling(14)
+        .mean()
+    )
+
+    avg_loss = (
+        perdidas
+        .rolling(14)
+        .mean()
+    )
+
+    rs = (
+        avg_gain /
+        avg_loss.replace(
+            0,
+            pd.NA
+        )
+    )
+
+    df["RSI"] = (
+        100 -
+        (
+            100 /
+            (1 + rs)
+        )
+    )
+
+
+    # MACD
+
+    ema12 = (
+        df["Close"]
+        .ewm(
+            span=12,
+            adjust=False
+        )
+        .mean()
+    )
+
+    ema26 = (
+        df["Close"]
+        .ewm(
+            span=26,
+            adjust=False
+        )
+        .mean()
+    )
+
+    df["MACD"] = (
+        ema12 - ema26
+    )
+
+
+    # Momentum
+
+    df["Momentum"] = (
+        df["Close"]
+        .pct_change(3)
+        * 100
+    )
+
+
+    return df
+
+
+# ============================================================
+# PREDICCIÓN
+# ============================================================
+
+def generar_prediccion(
+    df,
+    target
+):
+
+    ultimo = df.iloc[-1]
+
+    precio = float(
+        ultimo["Close"]
+    )
+
+    ema9 = float(
+        ultimo["EMA9"]
+    )
+
+    ema21 = float(
+        ultimo["EMA21"]
+    )
+
+    macd = float(
+        ultimo["MACD"]
+    )
+
+    rsi = ultimo["RSI"]
+
+    momentum = ultimo["Momentum"]
+
+
+    subir = 0
+    bajar = 0
+
+    razones = []
+
+
+    # --------------------------------------------------------
+    # DISTANCIA AL TARGET
+    # --------------------------------------------------------
+
+    distancia = (
+        precio -
+        target
+    )
+
+
+    if distancia > 0:
+
+        subir += 20
+
+        razones.append(
+            f"BTC está "
+            f"${distancia:,.2f} "
+            "sobre el Target."
+        )
+
+    elif distancia < 0:
+
+        bajar += 20
+
+        razones.append(
+            f"BTC está "
+            f"${abs(distancia):,.2f} "
+            "debajo del Target."
+        )
+
+    else:
+
+        razones.append(
+            "BTC está exactamente "
+            "en el Target."
+        )
+
+
+    # --------------------------------------------------------
+    # EMA
+    # --------------------------------------------------------
+
+    if ema9 > ema21:
+
+        subir += 25
+
+        razones.append(
+            "EMA9 > EMA21: "
+            "tendencia alcista."
+        )
+
+    else:
+
+        bajar += 25
+
+        razones.append(
+            "EMA9 < EMA21: "
+            "tendencia bajista."
+        )
+
+
+    # --------------------------------------------------------
+    # MACD
+    # --------------------------------------------------------
+
+    if macd > 0:
+
+        subir += 20
+
+        razones.append(
+            "MACD positivo."
+        )
+
+    else:
+
+        bajar += 20
+
+        razones.append(
+            "MACD negativo."
+        )
+
+
+    # --------------------------------------------------------
+    # RSI
+    # --------------------------------------------------------
+
+    if pd.notna(rsi):
+
+        rsi = float(rsi)
+
+
+        if rsi < 35:
+
+            subir += 15
+
+            razones.append(
+                f"RSI {rsi:.1f}: "
+                "posible rebote."
+            )
+
+        elif rsi > 65:
+
+            bajar += 15
+
+            razones.append(
+                f"RSI {rsi:.1f}: "
+                "presión bajista."
+            )
+
+        else:
+
+            razones.append(
+                f"RSI {rsi:.1f}: "
+                "zona neutral."
+            )
+
+
+    # --------------------------------------------------------
+    # MOMENTUM
+    # --------------------------------------------------------
+
+    if pd.notna(momentum):
+
+        momentum = float(
+            momentum
+        )
+
+
+        if momentum > 0:
+
+            subir += 20
+
+            razones.append(
+                f"Momentum "
+                f"+{momentum:.3f}%."
+            )
+
+        elif momentum < 0:
+
+            bajar += 20
+
+            razones.append(
+                f"Momentum "
+                f"{momentum:.3f}%."
+            )
+
+
+    # --------------------------------------------------------
+    # RESULTADO
+    # --------------------------------------------------------
+
+    total = (
+        subir +
+        bajar
+    )
+
+
+    if subir > bajar:
+
+        prediccion = "🟢 SUBIR"
+
+        confianza = (
+            subir /
+            total
+        ) * 100
+
+    elif bajar > subir:
+
+        prediccion = "🔴 BAJAR"
+
+        confianza = (
+            bajar /
+            total
+        ) * 100
+
+    else:
+
+        prediccion = (
+            "⚪ NO APOSTAR"
+        )
+
+        confianza = 50
+
+
+    return (
+        prediccion,
+        round(confianza),
+        razones
     )
 
 
@@ -64,35 +807,49 @@ def fin_ciclo():
 def cargar_historial():
 
     if not os.path.exists(
-        ARCHIVO_HISTORIAL
+        HISTORIAL_FILE
     ):
+
         return []
+
 
     try:
 
         with open(
-            ARCHIVO_HISTORIAL,
+            HISTORIAL_FILE,
             "r",
             encoding="utf-8"
         ) as f:
 
-            return json.load(f)
+            data = json.load(f)
 
-    except:
+            if isinstance(
+                data,
+                list
+            ):
 
-        return []
+                return data
+
+    except Exception:
+
+        pass
 
 
-def guardar_historial():
+    return []
+
+
+def guardar_historial(
+    historial
+):
 
     with open(
-        ARCHIVO_HISTORIAL,
+        HISTORIAL_FILE,
         "w",
         encoding="utf-8"
     ) as f:
 
         json.dump(
-            st.session_state.historial,
+            historial,
             f,
             indent=2,
             ensure_ascii=False
@@ -100,39 +857,731 @@ def guardar_historial():
 
 
 # ============================================================
-# MEMORIA
+# ESTADO
 # ============================================================
-
-if "ciclo_id" not in st.session_state:
-    st.session_state.ciclo_id = None
-
-if "senal" not in st.session_state:
-    st.session_state.senal = None
-
-if "confianza" not in st.session_state:
-    st.session_state.confianza = 0
-
-if "precio_inicio" not in st.session_state:
-    st.session_state.precio_inicio = 0.0
-
-if "target" not in st.session_state:
-    st.session_state.target = None
-
-if "market_ticker" not in st.session_state:
-    st.session_state.market_ticker = ""
-
-if "razones" not in st.session_state:
-    st.session_state.razones = []
 
 if "historial" not in st.session_state:
-    st.session_state.historial = cargar_historial()
+
+    st.session_state.historial = (
+        cargar_historial()
+    )
+
+
+if "ticker" not in st.session_state:
+
+    st.session_state.ticker = None
+
+
+if "prediccion" not in st.session_state:
+
+    st.session_state.prediccion = None
+
+
+if "confianza" not in st.session_state:
+
+    st.session_state.confianza = 0
+
+
+if "precio_inicio" not in st.session_state:
+
+    st.session_state.precio_inicio = 0
+
+
+if "target" not in st.session_state:
+
+    st.session_state.target = 0
+
+
+if "close_time" not in st.session_state:
+
+    st.session_state.close_time = None
+
+
+if "razones" not in st.session_state:
+
+    st.session_state.razones = []
 
 
 # ============================================================
-# TÍTULO
+# INTERFAZ
 # ============================================================
 
 st.title(
+    "₿ Bitcoin Predictor — Kalshi 15 Min"
+)
+
+
+# ============================================================
+# COMPROBAR CREDENCIALES
+# ============================================================
+
+if not API_KEY_ID or not PRIVATE_KEY:
+
+    st.error(
+        "❌ No se encontraron "
+        "las credenciales de Kalshi."
+    )
+
+    st.info(
+        "Revisa Streamlit → "
+        "Settings → Secrets."
+    )
+
+    st.stop()
+
+
+# ============================================================
+# EJECUCIÓN
+# ============================================================
+
+try:
+
+    # --------------------------------------------------------
+    # MERCADO KALSHI
+    # --------------------------------------------------------
+
+    mercado = (
+        buscar_mercado_actual()
+    )
+
+
+    ticker = mercado.get(
+        "ticker"
+    )
+
+
+    target = obtener_target(
+        mercado
+    )
+
+
+    close_time = (
+        mercado["_close"]
+    )
+
+
+    # --------------------------------------------------------
+    # BTC
+    # --------------------------------------------------------
+
+    btc = obtener_btc()
+
+    btc = indicadores(
+        btc
+    )
+
+
+    precio = float(
+        btc["Close"].iloc[-1]
+    )
+
+
+    # --------------------------------------------------------
+    # TIEMPO
+    # --------------------------------------------------------
+
+    ahora = datetime.now(
+        timezone.utc
+    )
+
+
+    segundos_restantes = max(
+
+        0,
+
+        int(
+            (
+                close_time -
+                ahora
+            ).total_seconds()
+        )
+    )
+
+
+    # --------------------------------------------------------
+    # NUEVO CONTRATO
+    # --------------------------------------------------------
+
+    if (
+        st.session_state.ticker
+        !=
+        ticker
+    ):
+
+
+        # ====================================================
+        # CERRAR CONTRATO ANTERIOR
+        # ====================================================
+
+        if (
+            st.session_state.ticker
+            and
+            st.session_state.prediccion
+        ):
+
+            try:
+
+                anterior = (
+                    kalshi_request(
+
+                        "GET",
+
+                        "/trade-api/v2/markets/"
+                        +
+                        st.session_state.ticker
+                    )
+                )
+
+
+                mercado_anterior = (
+                    anterior.get(
+                        "market",
+                        {}
+                    )
+                )
+
+
+                expiration_value = (
+                    mercado_anterior.get(
+                        "expiration_value"
+                    )
+                )
+
+
+                resultado_kalshi = (
+                    mercado_anterior.get(
+                        "result"
+                    )
+                )
+
+
+                if resultado_kalshi:
+
+                    resultado_real = (
+                        resultado_kalshi.upper()
+                    )
+
+                elif (
+                    expiration_value
+                    not in
+                    (None, "")
+                ):
+
+                    try:
+
+                        exp = float(
+                            expiration_value
+                        )
+
+                        if (
+                            exp >
+                            st.session_state.target
+                        ):
+
+                            resultado_real = (
+                                "UP"
+                            )
+
+                        elif (
+                            exp <
+                            st.session_state.target
+                        ):
+
+                            resultado_real = (
+                                "DOWN"
+                            )
+
+                        else:
+
+                            resultado_real = (
+                                "TIE"
+                            )
+
+                    except Exception:
+
+                        resultado_real = (
+                            "UNKNOWN"
+                        )
+
+                else:
+
+                    resultado_real = (
+                        "UNKNOWN"
+                    )
+
+
+                pred = (
+                    st.session_state.prediccion
+                )
+
+
+                if (
+                    pred == "🟢 SUBIR"
+                    and
+                    resultado_real == "UP"
+                ):
+
+                    resultado = (
+                        "✅ ACIERTO"
+                    )
+
+                elif (
+                    pred == "🔴 BAJAR"
+                    and
+                    resultado_real == "DOWN"
+                ):
+
+                    resultado = (
+                        "✅ ACIERTO"
+                    )
+
+                elif (
+                    pred ==
+                    "⚪ NO APOSTAR"
+                ):
+
+                    resultado = (
+                        "⚪ NO APOSTAR"
+                    )
+
+                elif (
+                    resultado_real ==
+                    "UNKNOWN"
+                ):
+
+                    resultado = (
+                        "⏳ SIN RESOLVER"
+                    )
+
+                else:
+
+                    resultado = (
+                        "❌ FALLÓ"
+                    )
+
+
+                registro = {
+
+                    "Ticker":
+                        st.session_state.ticker,
+
+                    "Target":
+                        round(
+                            st.session_state.target,
+                            2
+                        ),
+
+                    "Predicción":
+                        pred,
+
+                    "Confianza":
+                        f"{st.session_state.confianza}%",
+
+                    "Precio entrada":
+                        round(
+                            st.session_state.precio_inicio,
+                            2
+                        ),
+
+                    "Expiration Value":
+                        expiration_value,
+
+                    "Resultado Kalshi":
+                        resultado_real,
+
+                    "Resultado":
+                        resultado
+                }
+
+
+                tickers = [
+
+                    x.get(
+                        "Ticker"
+                    )
+
+                    for x
+                    in st.session_state.historial
+                ]
+
+
+                if (
+                    st.session_state.ticker
+                    not in tickers
+                ):
+
+                    st.session_state.historial.append(
+                        registro
+                    )
+
+                    guardar_historial(
+                        st.session_state.historial
+                    )
+
+
+            except Exception as cierre_error:
+
+                st.warning(
+                    "No pude verificar "
+                    "todavía el resultado "
+                    "del contrato anterior: "
+                    +
+                    str(cierre_error)
+                )
+
+
+        # ====================================================
+        # NUEVA PREDICCIÓN
+        # ====================================================
+
+        prediccion, confianza, razones = (
+            generar_prediccion(
+                btc,
+                target
+            )
+        )
+
+
+        st.session_state.ticker = (
+            ticker
+        )
+
+        st.session_state.prediccion = (
+            prediccion
+        )
+
+        st.session_state.confianza = (
+            confianza
+        )
+
+        st.session_state.precio_inicio = (
+            precio
+        )
+
+        st.session_state.target = (
+            target
+        )
+
+        st.session_state.close_time = (
+            close_time.isoformat()
+        )
+
+        st.session_state.razones = (
+            razones
+        )
+
+
+    # ========================================================
+    # MERCADO
+    # ========================================================
+
+    st.subheader(
+        "🎯 Contrato Kalshi"
+    )
+
+
+    st.write(
+        f"**Ticker:** `{ticker}`"
+    )
+
+
+    titulo = mercado.get(
+        "title",
+        ""
+    )
+
+
+    subtitulo = mercado.get(
+        "subtitle",
+        ""
+    )
+
+
+    if titulo:
+
+        st.write(
+            f"**{titulo}**"
+        )
+
+
+    if subtitulo:
+
+        st.caption(
+            subtitulo
+        )
+
+
+    # ========================================================
+    # PRECIO / TARGET
+    # ========================================================
+
+    col1, col2 = st.columns(2)
+
+
+    col1.metric(
+        "₿ BTC",
+        f"${precio:,.2f}"
+    )
+
+
+    col2.metric(
+        "🎯 Target",
+        f"${st.session_state.target:,.2f}"
+    )
+
+
+    diferencia = (
+        precio -
+        st.session_state.target
+    )
+
+
+    if diferencia > 0:
+
+        st.success(
+            f"BTC está "
+            f"${diferencia:,.2f} "
+            "POR ENCIMA del Target"
+        )
+
+    elif diferencia < 0:
+
+        st.error(
+            f"BTC está "
+            f"${abs(diferencia):,.2f} "
+            "POR DEBAJO del Target"
+        )
+
+    else:
+
+        st.warning(
+            "BTC está exactamente "
+            "en el Target."
+        )
+
+
+    # ========================================================
+    # PREDICCIÓN
+    # ========================================================
+
+    st.subheader(
+        "🔮 Predicción"
+    )
+
+
+    st.write(
+        f"# {st.session_state.prediccion}"
+    )
+
+
+    st.metric(
+        "Confianza",
+        f"{st.session_state.confianza}%"
+    )
+
+
+    st.write(
+        f"Precio al entrar: "
+        f"${st.session_state.precio_inicio:,.2f}"
+    )
+
+
+    # ========================================================
+    # TIEMPO
+    # ========================================================
+
+    minutos = (
+        segundos_restantes // 60
+    )
+
+    segundos = (
+        segundos_restantes % 60
+    )
+
+
+    if segundos_restantes <= 60:
+
+        st.warning(
+            f"⚠️ ÚLTIMO MINUTO "
+            f"{minutos:02d}:{segundos:02d}"
+        )
+
+
+    st.subheader(
+        f"⏳ Cierra en "
+        f"{minutos:02d}:{segundos:02d}"
+    )
+
+
+    hora_cierre_local = (
+        close_time.astimezone(
+            LOCAL_TZ
+        )
+    )
+
+
+    st.write(
+        "Cierre:",
+        hora_cierre_local.strftime(
+            "%I:%M:%S %p"
+        )
+    )
+
+
+    # ========================================================
+    # ANÁLISIS
+    # ========================================================
+
+    st.subheader(
+        "📊 Análisis"
+    )
+
+
+    for razon in (
+        st.session_state.razones
+    ):
+
+        st.write(
+            "•",
+            razon
+        )
+
+
+    # ========================================================
+    # GRÁFICO
+    # ========================================================
+
+    st.subheader(
+        "📈 BTC"
+    )
+
+
+    st.line_chart(
+        btc["Close"]
+    )
+
+
+    # ========================================================
+    # HISTORIAL
+    # ========================================================
+
+    st.subheader(
+        "📜 Historial"
+    )
+
+
+    if st.session_state.historial:
+
+        tabla = pd.DataFrame(
+            st.session_state.historial
+        )
+
+
+        st.dataframe(
+            tabla,
+            use_container_width=True,
+            hide_index=True
+        )
+
+
+        aciertos = len(
+            tabla[
+                tabla["Resultado"]
+                ==
+                "✅ ACIERTO"
+            ]
+        )
+
+
+        fallos = len(
+            tabla[
+                tabla["Resultado"]
+                ==
+                "❌ FALLÓ"
+            ]
+        )
+
+
+        evaluados = (
+            aciertos +
+            fallos
+        )
+
+
+        if evaluados > 0:
+
+            precision = (
+                aciertos /
+                evaluados
+            ) * 100
+
+        else:
+
+            precision = 0
+
+
+        a, b, c = st.columns(3)
+
+
+        a.metric(
+            "✅ Aciertos",
+            aciertos
+        )
+
+
+        b.metric(
+            "❌ Fallos",
+            fallos
+        )
+
+
+        c.metric(
+            "🎯 Precisión",
+            f"{precision:.1f}%"
+        )
+
+
+    else:
+
+        st.info(
+            "El historial aparecerá "
+            "cuando termine el primer "
+            "contrato."
+        )
+
+
+    # ========================================================
+    # INFORMACIÓN
+    # ========================================================
+
+    st.divider()
+
+
+    st.caption(
+        "Esta aplicación solamente "
+        "analiza el mercado. "
+        "NO coloca apuestas automáticamente."
+    )
+
+
+except Exception as error:
+
+    st.error(
+        "❌ Error de ejecución"
+    )
+
+    st.code(
+        str(error)
+    )
+
+
+# ============================================================
+# ACTUALIZACIÓN
+# ============================================================
+
+time.sleep(5)
+
+st.rerun()
     "₿ Bitcoin Predictor — Kalshi 15 Min"
 )
 
