@@ -1178,6 +1178,23 @@ def generar_prediccion(
         prediccion = "⚪ NO APOSTAR"
 
     # ========================================================
+    # DECISIÓN
+    # ========================================================
+
+    if score >= 10:
+
+        prediccion = "🟢 ARRIBA"
+
+    elif score <= -10:
+
+        prediccion = "🔴 ABAJO"
+
+    else:
+
+        prediccion = "⚪ NO APOSTAR"
+
+
+    # ========================================================
     # CONFIANZA
     # ========================================================
 
@@ -1187,4 +1204,79 @@ def generar_prediccion(
 
     else:
 
+        fuerza = min(
+            abs(score),
+            80
+        )
+
+        confianza = int(
+            round(
+                50 + fuerza * 0.52
+            )
+        )
+
+        confianza = max(
+            50,
+            min(
+                92,
+                confianza
+            )
+        )
+
+
+    # ========================================================
+    # RESULTADO DEL ANÁLISIS
+    # ========================================================
+
+    razones.append(
+        f"Score final: {score:+d}."
+    )
+
+
+    return (
+        prediccion,
+        confianza,
+        razones,
+        score
+    )
+
+
+# ============================================================
+# HISTORIAL
+# ============================================================
+
+def cargar_historial():
+
+    if not os.path.exists(
+        HISTORIAL_FILE
+    ):
+
+        return []
+
+
+    try:
+
+        with open(
+            HISTORIAL_FILE,
+            "r",
+            encoding="utf-8"
+        ) as archivo:
+
+            datos = json.load(
+                archivo
+            )
+
+        if isinstance(
+            datos,
+            list
+        ):
+
+            return datos
+
+    except Exception:
+
+        pass
+
+
+    return []
        
