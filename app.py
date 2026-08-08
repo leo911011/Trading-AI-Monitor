@@ -1144,10 +1144,124 @@ def generar_preprediccion_siguiente(
             )
 
 
-    # ========================================================
+        # ========================================================
     # MOMENTUM 5
     # ========================================================
 
     if pd.notna(momentum5):
 
         momentum5 = float(
+            momentum5
+        )
+
+        if momentum5 > 0:
+
+            subir += 18
+
+            razones.append(
+                f"Momentum 5m positivo "
+                f"(+{momentum5:.3f}%)."
+            )
+
+        elif momentum5 < 0:
+
+            bajar += 18
+
+            razones.append(
+                f"Momentum 5m negativo "
+                f"({momentum5:.3f}%)."
+            )
+
+        else:
+
+            razones.append(
+                "Momentum 5m neutral."
+            )
+
+
+    # ========================================================
+    # FUERZA DE LA TENDENCIA
+    # ========================================================
+
+    diferencia_ema = (
+        ema9 - ema21
+    )
+
+    if diferencia_ema > 0:
+
+        subir += 8
+
+        razones.append(
+            "EMA9 está por encima de EMA21."
+        )
+
+    elif diferencia_ema < 0:
+
+        bajar += 8
+
+        razones.append(
+            "EMA9 está por debajo de EMA21."
+        )
+
+
+    # ========================================================
+    # DECISIÓN FINAL
+    # ========================================================
+
+    total = (
+        subir +
+        bajar
+    )
+
+    if total <= 0:
+
+        return (
+            "⚪ NO APOSTAR",
+            50,
+            razones
+        )
+
+
+    if subir > bajar:
+
+        prediccion = "🟢 ARRIBA"
+
+        confianza = (
+            subir /
+            total
+        ) * 100
+
+    elif bajar > subir:
+
+        prediccion = "🔴 ABAJO"
+
+        confianza = (
+            bajar /
+            total
+        ) * 100
+
+    else:
+
+        prediccion = "⚪ NO APOSTAR"
+
+        confianza = 50
+
+
+    # ========================================================
+    # LIMITAR CONFIANZA
+    # ========================================================
+
+    confianza = max(
+        50,
+        min(
+            95,
+            round(confianza)
+        )
+    )
+
+
+    return (
+        prediccion,
+        confianza,
+        razones
+    )
